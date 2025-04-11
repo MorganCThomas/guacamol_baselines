@@ -2,8 +2,7 @@ from __future__ import print_function
 
 import argparse
 import copy
-import json
-import os
+from pathlib import Path
 from collections import namedtuple
 from time import time
 from typing import List, Optional
@@ -14,12 +13,11 @@ import numpy as np
 from joblib import delayed
 from rdkit import rdBase
 
-from guacamol.assess_goal_directed_generation import assess_goal_directed_generation
-from guacamol.goal_directed_generator import GoalDirectedGenerator
-from guacamol.scoring_function import ScoringFunction
 from guacamol.utils.chemistry import canonicalize
-from guacamol.utils.helpers import setup_default_logger
+from molscore import MolScore, MolScoreBenchmark, MolScoreCurriculum
+from moleval.utils import read_smiles
 from . import cfg_util, smiles_grammar
+from ...common.utils import load_config, save_config
 
 rdBase.DisableLog('rdApp.error')
 GCFG = smiles_grammar.GCFG
@@ -95,7 +93,7 @@ def mutate(p_gene, scoring_function):
     return Molecule(c_score, c_smiles, c_gene)
 
 
-class ChemGEGenerator(GoalDirectedGenerator):
+class ChemGEGenerator:
 
     def __init__(self, smi_file, population_size, n_mutations, gene_size, generations, n_jobs=-1, random_start=False, patience=5):
         self.pool = joblib.Parallel(n_jobs=n_jobs)
@@ -109,30 +107,31 @@ class ChemGEGenerator(GoalDirectedGenerator):
         self.patience = patience
 
     def load_smiles_from_file(self, smi_file):
-        with open(smi_file) as f:
-            return self.pool(delayed(canonicalize)(s.strip()) for s in f)
+        smiles = read_smiles(smi_file) # MODIFIED for gz
+        return self.pool(delayed(canonicalize)(s.strip()) for s in smiles)
 
     def top_k(self, smiles, scoring_function, k):
-        joblist = (delayed(scoring_function.score)(s) for s in smiles)
-        scores = self.pool(joblist)
+        #joblist = (delayed(scoring_function.score)(s) for s in smiles)
+        #scores = self.pool(joblist)
+        scores = scoring_function.score(smiles, flt=True)
         scored_smiles = list(zip(scores, smiles))
         scored_smiles = sorted(scored_smiles, key=lambda x: x[0], reverse=True)
         return [smile for score, smile in scored_smiles][:k]
 
-    def generate_optimized_molecules(self, scoring_function: ScoringFunction, number_molecules: int,
+    def generate_optimized_molecules(self, scoring_function, number_molecules: int,
                                      starting_population: Optional[List[str]] = None) -> List[str]:
 
-        if number_molecules > self.population_size:
-            self.population_size = number_molecules
-            print(f'Benchmark requested more molecules than expected: new population is {number_molecules}')
+        #if number_molecules > self.population_size:
+        #    self.population_size = number_molecules
+        #    print(f'Benchmark requested more molecules than expected: new population is {number_molecules}')
 
         # fetch initial population?
         if starting_population is None:
             print('selecting initial population...')
-            init_size = self.population_size + self.n_mutations
+            init_size = self.population_size #+ self.n_mutations
             all_smiles = copy.deepcopy(self.all_smiles)
             if self.random_start:
-                starting_population = np.random.choice(all_smiles, init_size)
+                starting_population = list(np.random.choice(all_smiles, init_size))
             else:
                 starting_population = self.top_k(all_smiles, scoring_function, init_size)
 
@@ -144,7 +143,7 @@ class ChemGEGenerator(GoalDirectedGenerator):
                          for s in starting_population]
 
         # score initial population
-        initial_scores = scoring_function.score_list(starting_population)
+        initial_scores = scoring_function.score(starting_population, flt=True)
         population = [Molecule(*m) for m in zip(initial_scores, starting_population, initial_genes)]
         population = sorted(population, key=lambda x: x.score, reverse=True)[:self.population_size]
         population_scores = [p.score for p in population]
@@ -153,8 +152,10 @@ class ChemGEGenerator(GoalDirectedGenerator):
         t0 = time()
 
         patience = 0
+        generation = 0
 
-        for generation in range(self.generations):
+        while not scoring_function.finished:
+        #for generation in range(self.generations):
 
             old_scores = population_scores
             # select random genes
@@ -163,8 +164,13 @@ class ChemGEGenerator(GoalDirectedGenerator):
             genes_to_mutate = [all_genes[i] for i in choice_indices]
 
             # evolve genes
-            joblist = (delayed(mutate)(g, scoring_function) for g in genes_to_mutate)
-            new_population = self.pool(joblist)
+            #joblist = (delayed(mutate)(g, scoring_function) for g in genes_to_mutate)
+            #new_population = self.pool(joblist)
+            # MODIFIED to prevent scoring a molecule at a time
+            c_genes = self.pool(delayed(mutation)(g) for g in genes_to_mutate)
+            c_smiles = self.pool(delayed(canonicalize)(cfg_util.decode(gene_to_cfg(g))) for g in c_genes)
+            c_scores = scoring_function.score(c_smiles, flt=True)
+            new_population = [Molecule(*m) for m in zip(c_scores, c_smiles, c_genes)]
 
             # join and dedup
             population += new_population
@@ -197,6 +203,7 @@ class ChemGEGenerator(GoalDirectedGenerator):
                   f'std: {np.std(population_scores):.3f} | '
                   f'{gen_time:.2f} sec/gen | '
                   f'{mol_sec:.2f} mol/sec')
+            generation += 1
 
         # finally
         return [molecule.smiles for molecule in population[:number_molecules]]
@@ -205,6 +212,7 @@ class ChemGEGenerator(GoalDirectedGenerator):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--smiles_file', default='data/guacamol_v1_all.smiles')
+    parser.add_argument('--molscore_config', help='Path to the config file for the MolScore scoring function')
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--population_size', type=int, default=100)
     parser.add_argument('--n_mutations', type=int, default=200)
@@ -214,22 +222,12 @@ def main():
     parser.add_argument('--random_start', action='store_true')
     parser.add_argument('--output_dir', type=str, default=None)
     parser.add_argument('--patience', type=int, default=5)
-    parser.add_argument('--suite', default='v2')
 
     args = parser.parse_args()
 
     np.random.seed(args.seed)
 
-    setup_default_logger()
-
-    if args.output_dir is None:
-        args.output_dir = os.path.dirname(os.path.realpath(__file__))
-
-    # save command line args
-    with open(os.path.join(args.output_dir, 'goal_directed_params.json'), 'w') as jf:
-        json.dump(vars(args), jf, sort_keys=True, indent=4)
-
-    optimiser = ChemGEGenerator(smi_file=args.smiles_file,
+    optimizer = ChemGEGenerator(smi_file=args.smiles_file,
                                 population_size=args.population_size,
                                 n_mutations=args.n_mutations,
                                 gene_size=args.gene_size,
@@ -237,9 +235,64 @@ def main():
                                 n_jobs=args.n_jobs,
                                 random_start=args.random_start,
                                 patience=args.patience)
-
-    json_file_path = os.path.join(args.output_dir, 'goal_directed_results.json')
-    assess_goal_directed_generation(optimiser, json_output_file=json_file_path, benchmark_version=args.suite)
+    
+    # ---- Run using MolScore ----
+    cfg = load_config(args.molscore_config)
+    # Single mode
+    if cfg.molscore_mode == "single":
+        task = MolScore(
+            model_name=cfg.model_name,
+            task_config=cfg.molscore_task,
+            budget=cfg.total_smiles,
+            output_dir=cfg.output_dir,
+            add_run_dir=True,
+            **cfg.get("molscore_kwargs", {}),
+        )
+        # Save configs
+        save_config(vars(args), Path(task.save_dir) / "args.yaml")
+        save_config(cfg, Path(task.save_dir) / "molscore_args.yaml")
+        with task as scoring_function:
+            optimizer.generate_optimized_molecules(
+                scoring_function = scoring_function,
+                number_molecules = cfg.total_smiles,
+            )
+    # Benchmark mode
+    if cfg.molscore_mode == "benchmark":
+        MSB = MolScoreBenchmark(
+            model_name=cfg.model_name,
+            benchmark=cfg.molscore_task,
+            budget=cfg.total_smiles,
+            output_dir=cfg.output_dir,
+            add_benchmark_dir=True,
+            **cfg.get("molscore_kwargs", {}),
+        )
+        # Save configs
+        save_config(vars(args), Path(MSB.output_dir) / "args.yaml")
+        save_config(cfg, Path(MSB.output_dir) / "molscore_args.yaml")
+        with MSB as benchmark:
+            for task in benchmark:
+                with task as scoring_function:
+                    optimizer.generate_optimized_molecules(
+                        scoring_function = scoring_function,
+                        number_molecules = cfg.total_smiles,
+                    )
+    # Curriculum mode
+    if cfg.molscore_mode == "curriculum":
+        task = MolScoreCurriculum(
+            model_name=cfg.model_name,
+            benchmark=cfg.molscore_task,
+            budget=cfg.total_smiles,
+            output_dir=cfg.output_dir,
+            **cfg.get("molscore_kwargs", {}),
+        )
+        # Save configs
+        save_config(vars(args), Path(task.save_dir) / "args.yaml")
+        save_config(cfg, Path(task.save_dir) / "molscore_args.yaml")
+        with task as scoring_function:
+            optimizer.generate_optimized_molecules(
+                scoring_function = scoring_function,
+                number_molecules = cfg.total_smiles,
+            )
 
 
 if __name__ == "__main__":

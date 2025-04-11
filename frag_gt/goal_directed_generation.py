@@ -2,28 +2,22 @@ from __future__ import print_function
 
 import argparse
 import ast
-import json
-import logging
-import os
 import random
 from typing import Optional, List
+from pathlib import Path
 
 import numpy as np
 
-from frag_gt.frag_gt import FragGTGenerator
-from guacamol.assess_goal_directed_generation import assess_goal_directed_generation
-from guacamol.goal_directed_generator import GoalDirectedGenerator
-from guacamol.scoring_function import ScoringFunction
-from guacamol.utils.helpers import setup_default_logger
+from molscore import MolScore, MolScoreBenchmark, MolScoreCurriculum
 
-logger = logging.getLogger(__name__)
-setup_default_logger()
+from .frag_gt.frag_gt import FragGTGenerator
+from ...common.utils import load_config, save_config
 
 
-class FragGTGoalDirectedGenerator(FragGTGenerator, GoalDirectedGenerator):
+class FragGTGoalDirectedGenerator(FragGTGenerator):
     """ wrapper class to keep FragGT and GuacaMol independent """
 
-    def generate_optimized_molecules(self, scoring_function: ScoringFunction, number_molecules: int,
+    def generate_optimized_molecules(self, scoring_function, number_molecules: int,
                                      starting_population: Optional[List[str]] = None) -> List[str]:
         return self.optimize(scoring_function=scoring_function,  # type: ignore
                              number_molecules=number_molecules,
@@ -48,7 +42,8 @@ class FragGTGoalDirectedGenerator(FragGTGenerator, GoalDirectedGenerator):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--smiles_file", default="data/guacamol_v1_all.smiles", help="smiles file for initial population")
-    parser.add_argument("--fragstore_path", type=str, default="frag_gt/data/fragment_libraries/guacamol_v1_all_fragstore_brics.pkl")
+    parser.add_argument('--molscore_config', help='Path to the config file for the MolScore scoring function')
+    parser.add_argument("--fragstore_path", type=str, default=str(Path(__file__).parent / "frag_gt/data/fragment_libraries/guacamol_v1_all_fragstore_brics.pkl"))
     parser.add_argument("--allow_unspecified_stereocenters", type=bool, default=True,
                         help="if false, unspecified stereocenters will be enumerated to specific stereoisomers")
     parser.add_argument("--scorer", type=str, default="counts", help="random|counts|ecfp4|afps")
@@ -58,35 +53,17 @@ def main():
     parser.add_argument("--n_mutations", type=int, default=500)
     parser.add_argument("--generations", type=int, default=300)
     parser.add_argument("--mapelites", type=str, default=None, help="keep elites in discretized space for diversity: species|mwlogp")
-    # parser.add_argument("--write_all_generations", action="store_true",
-    #                     help="if true, all intermediate generations will be written to the output directory")
     parser.add_argument("--output_dir", type=str, default=None)
     parser.add_argument("--random_start", action="store_true", help="sample initial population instead of scoring and taking top k")
     parser.add_argument("--patience", type=int, default=5)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--n_jobs", type=int, default=-1)
-    parser.add_argument("--suite", default="v2", help="version of the guacamol benchmark suite to run")
+    parser.add_argument("-v", action="store_true", help="verbose")
 
     args = parser.parse_args()
 
     np.random.seed(args.seed)
     random.seed(args.seed)
-
-    # by default, write to same directory as this file
-    if args.output_dir is None:
-        args.output_dir = os.path.dirname(os.path.realpath(__file__))
-
-    # # setup writing directory for intermediate results (requires guacamol version >0.6.0)
-    # intermediate_results_dir: Optional[str] = None
-    # if args.write_all_generations:
-    #     intermediate_results_dir = os.path.join(args.output_dir, "generations/")
-    #     os.makedirs(intermediate_results_dir, exist_ok=True)
-    #     logger.info(f"writing intermediate generation molecules to {intermediate_results_dir}")
-
-    # save command line args
-    os.makedirs(args.output_dir, exist_ok=True)
-    with open(os.path.join(args.output_dir, "goal_directed_params.json"), "w") as jf:
-        json.dump(vars(args), jf, sort_keys=True, indent=4)
 
     optimizer = FragGTGoalDirectedGenerator(smi_file=args.smiles_file,
                                             fragmentation_scheme="brics",
@@ -103,10 +80,66 @@ def main():
                                             n_jobs=args.n_jobs,
                                             # intermediate_results_dir=intermediate_results_dir,
                                             intermediate_results_dir=None,
+                                            verbose=True,
     )
-
-    json_file_path = os.path.join(args.output_dir, "goal_directed_results.json")
-    assess_goal_directed_generation(optimizer, json_output_file=json_file_path, benchmark_version=args.suite)
+    
+    # ---- Run using MolScore ----
+    cfg = load_config(args.molscore_config)
+    # Single mode
+    if cfg.molscore_mode == "single":
+        task = MolScore(
+            model_name=cfg.model_name,
+            task_config=cfg.molscore_task,
+            budget=cfg.total_smiles,
+            output_dir=cfg.output_dir,
+            add_run_dir=True,
+            **cfg.get("molscore_kwargs", {}),
+        )
+        # Save configs
+        save_config(vars(args), Path(task.save_dir) / "args.yaml")
+        save_config(cfg, Path(task.save_dir) / "molscore_args.yaml")
+        with task as scoring_function:
+            optimizer.generate_optimized_molecules(
+                scoring_function = scoring_function,
+                number_molecules = cfg.total_smiles,
+            )
+    # Benchmark mode
+    if cfg.molscore_mode == "benchmark":
+        MSB = MolScoreBenchmark(
+            model_name=cfg.model_name,
+            benchmark=cfg.molscore_task,
+            budget=cfg.total_smiles,
+            output_dir=cfg.output_dir,
+            add_benchmark_dir=True,
+            **cfg.get("molscore_kwargs", {}),
+        )
+        # Save configs
+        save_config(vars(args), Path(MSB.save_dir) / "args.yaml")
+        save_config(cfg, Path(MSB.save_dir) / "molscore_args.yaml")
+        with MSB as benchmark:
+            for task in benchmark:
+                with task as scoring_function:
+                    optimizer.generate_optimized_molecules(
+                        scoring_function = scoring_function,
+                        number_molecules = cfg.total_smiles,
+                    )
+    # Curriculum mode
+    if cfg.molscore_mode == "curriculum":
+        task = MolScoreCurriculum(
+            model_name=cfg.model_name,
+            benchmark=cfg.molscore_task,
+            budget=cfg.total_smiles,
+            output_dir=cfg.output_dir,
+            **cfg.get("molscore_kwargs", {}),
+        )
+        # Save configs
+        save_config(vars(args), Path(task.save_dir) / "args.yaml")
+        save_config(cfg, Path(task.save_dir) / "molscore_args.yaml")
+        with task as scoring_function:
+            optimizer.generate_optimized_molecules(
+                scoring_function = scoring_function,
+                number_molecules = cfg.total_smiles,
+            )
 
 
 if __name__ == "__main__":

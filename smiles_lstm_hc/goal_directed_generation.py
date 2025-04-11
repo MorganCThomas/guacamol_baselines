@@ -1,17 +1,18 @@
 import argparse
 import os
+from pathlib import Path
 
-from guacamol.assess_goal_directed_generation import assess_goal_directed_generation
-from guacamol.utils.helpers import setup_default_logger
+from molscore import MolScore, MolScoreBenchmark, MolScoreCurriculum
 
 from .smiles_rnn_directed_generator import SmilesRnnDirectedGenerator
+from ...common.utils import load_config, save_config
 
 if __name__ == '__main__':
-    setup_default_logger()
 
     parser = argparse.ArgumentParser(description='Goal-directed generation benchmark for SMILES RNN',
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('--model_path', default=None, help='Full path to the pre-trained SMILES RNN model')
+    parser.add_argument('--molscore_config', help='Path to the config file for the MolScore scoring function')
     parser.add_argument('--max_len', default=100, type=int, help='Max length of a SMILES string')
     parser.add_argument('--seed', default=42, type=int, help='Random seed')
     parser.add_argument('--output_dir', default=None, help='Output directory for results')
@@ -28,11 +29,7 @@ if __name__ == '__main__':
     parser.add_argument('--smiles_file', default='data/guacamol_v1_all.smiles')
     parser.add_argument('--random_start', action='store_true')
     parser.add_argument('--n_jobs', type=int, default=-1)
-    parser.add_argument('--suite', default='v2')
     args = parser.parse_args()
-
-    if args.output_dir is None:
-        args.output_dir = os.path.dirname(os.path.realpath(__file__))
 
     if args.model_path is None:
         dir_path = os.path.dirname(os.path.realpath(__file__))
@@ -49,6 +46,61 @@ if __name__ == '__main__':
                                            random_start=args.random_start,
                                            smi_file=args.smiles_file,
                                            n_jobs=args.n_jobs)
-
-    json_file_path = os.path.join(args.output_dir, 'goal_directed_results.json')
-    assess_goal_directed_generation(optimizer, json_output_file=json_file_path, benchmark_version=args.suite)
+    
+    # ---- Run using MolScore ----
+    cfg = load_config(args.molscore_config)
+    # Single mode
+    if cfg.molscore_mode == "single":
+        task = MolScore(
+            model_name=cfg.model_name,
+            task_config=cfg.molscore_task,
+            budget=cfg.total_smiles,
+            output_dir=cfg.output_dir,
+            add_run_dir=True,
+            **cfg.get("molscore_kwargs", {}),
+        )
+        # Save configs
+        save_config(vars(args), Path(task.save_dir) / "args.yaml")
+        save_config(cfg, Path(task.save_dir) / "molscore_args.yaml")
+        with task as scoring_function:
+            optimizer.generate_optimized_molecules(
+                scoring_function = scoring_function,
+                number_molecules = cfg.total_smiles,
+            )
+    # Benchmark mode
+    if cfg.molscore_mode == "benchmark":
+        MSB = MolScoreBenchmark(
+            model_name=cfg.model_name,
+            benchmark=cfg.molscore_task,
+            budget=cfg.total_smiles,
+            output_dir=cfg.output_dir,
+            add_benchmark_dir=True,
+            **cfg.get("molscore_kwargs", {}),
+        )
+        # Save configs
+        save_config(vars(args), Path(MSB.output_dir) / "args.yaml")
+        save_config(cfg, Path(MSB.output_dir) / "molscore_args.yaml")
+        with MSB as benchmark:
+            for task in benchmark:
+                with task as scoring_function:
+                    optimizer.generate_optimized_molecules(
+                        scoring_function = scoring_function,
+                        number_molecules = cfg.total_smiles,
+                    )
+    # Curriculum mode
+    if cfg.molscore_mode == "curriculum":
+        task = MolScoreCurriculum(
+            model_name=cfg.model_name,
+            benchmark=cfg.molscore_task,
+            budget=cfg.total_smiles,
+            output_dir=cfg.output_dir,
+            **cfg.get("molscore_kwargs", {}),
+        )
+        # Save configs
+        save_config(vars(args), Path(task.save_dir) / "args.yaml")
+        save_config(cfg, Path(task.save_dir) / "molscore_args.yaml")
+        with task as scoring_function:
+            optimizer.generate_optimized_molecules(
+                scoring_function = scoring_function,
+                number_molecules = cfg.total_smiles,
+            )

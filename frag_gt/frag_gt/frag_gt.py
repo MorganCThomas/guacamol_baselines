@@ -6,11 +6,12 @@ from typing import List, Optional, Set, Tuple
 import numpy as np
 import pandas as pd
 from rdkit import Chem
+from moleval.utils import read_smiles
 
-from frag_gt.src.io import load_smiles_from_file, valid_mols_from_smiles
-from frag_gt.src.mapelites import map_elites_factory
-from frag_gt.src.population import MolecularPopulationGenerator, Molecule
-from frag_gt.src.scorers import SmilesScorer
+from .src.io import valid_mols_from_smiles
+from .src.mapelites import map_elites_factory
+from .src.population import MolecularPopulationGenerator, Molecule
+from .src.scorers import SmilesScorer
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +37,8 @@ class FragGTGenerator:
                  random_start: bool = False,
                  patience: int = 5,
                  n_jobs: int = -1,
-                 intermediate_results_dir: Optional[str] = None):
+                 intermediate_results_dir: Optional[str] = None,
+                 verbose: bool = False,):
         """
 
         Args:
@@ -78,13 +80,17 @@ class FragGTGenerator:
         self.n_jobs = n_jobs
         self.intermediate_results_dir = intermediate_results_dir
 
+        if verbose:
+            logger.setLevel(logging.INFO)
+            logger.addHandler(logging.StreamHandler())
+
         # map-elites (frag-gti)
         self.map_elites = None if map_elites is None else map_elites_factory(map_elites, fragmentation_scheme)
 
         logger.info(self.__dict__)
 
     def get_initial_population(self, size: int) -> List[Chem.rdchem.Mol]:
-        raw_smiles = load_smiles_from_file(self.smi_file)
+        raw_smiles = read_smiles(self.smi_file)
         if self.random_start:
             logger.info(f"taking a random subset of smiles as initial population (init_size: {size})")
             raw_smiles = np.random.choice(raw_smiles, size)
@@ -141,17 +147,17 @@ class FragGTGenerator:
             list of optimal smiles
         """
 
-        if number_molecules > self.population_size:
-            self.population_size = number_molecules
-            logger.info(f"Benchmark requested more molecules than expected: new population is {number_molecules}")
+        # MODIFIED
+        #if number_molecules > self.population_size:
+        #    self.population_size = number_molecules
+        #    logger.info(f"Benchmark requested more molecules than expected: new population is {number_molecules}")
 
         # prepare initial population
         logger.info("preparing initial population...")
         if starting_population is None:
             # use the smiles file provided in the init to generate a starting population
             logger.info(f"loading initial population from smiles file: {self.smi_file}")
-            initial_population_size = (self.population_size + self.n_mutations) * 4
-            initial_population = self.get_initial_population(size=initial_population_size)
+            initial_population = self.get_initial_population(size=self.population_size)
         else:
             # user-provided smiles are used as a starting population, parse and remove invalids
             logger.info(f"using user provided initial population for generation: {starting_population}")
@@ -159,7 +165,7 @@ class FragGTGenerator:
 
         # score initial population of mol objects
         logger.info("scoring initial population...")
-        population_scores = scoring_function.score_list([Chem.MolToSmiles(x) for x in initial_population])
+        population_scores = scoring_function.score([Chem.MolToSmiles(x) for x in initial_population], flt=True)
 
         # compile initial population
         population = [Molecule(*m) for m in zip(population_scores, initial_population)]
@@ -202,7 +208,8 @@ class FragGTGenerator:
 
         patience = 0
         t0 = time()
-        for generation in range(self.generations):
+        generation = 0
+        while not scoring_function.finished:
 
             # keep track of old scores for early stopping (patience)
             old_scores = population_scores
@@ -210,7 +217,7 @@ class FragGTGenerator:
             # generate new pool by applying mutation and crossover operators to existing pool
             new_population = mol_generator.generate(population)
 
-            # don't score molecules that have been scored before
+            # don't score molecules that have been scored before # NOTE may be unfair
             existing_population_smiles = {Chem.MolToSmiles(x.mol) for x in population}
             new_population_tuples = {(m, Chem.MolToSmiles(m)) for m in new_population}
             new_mol_tuples = [(m, s) for m, s in new_population_tuples if s not in existing_population_smiles]
@@ -226,7 +233,7 @@ class FragGTGenerator:
             logger.debug(f"{len(new_population)-len(new_molecules)} smiles already existed in the population")
 
             # score
-            new_scores = scoring_function.score_list(new_smiles)
+            new_scores = scoring_function.score(list(new_smiles), flt=True)
 
             # compile new population
             assert len(new_scores) == len(new_molecules)
@@ -272,6 +279,9 @@ class FragGTGenerator:
             # write molecules from current generation
             if (self.intermediate_results_dir is not None) and (job_name is not None):
                 self.write_generation_results(population, generation, job_name, self.intermediate_results_dir)
+                
+            # Update iterator
+            generation += 1
 
         # finally
         return [Chem.MolToSmiles(molecule.mol) for molecule in population[:number_molecules]]

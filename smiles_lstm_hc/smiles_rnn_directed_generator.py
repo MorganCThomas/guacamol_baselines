@@ -4,16 +4,15 @@ from typing import List, Optional
 import joblib
 import torch
 
-from guacamol.goal_directed_generator import GoalDirectedGenerator
-from guacamol.scoring_function import ScoringFunction
 from guacamol.utils.chemistry import canonicalize_list, canonicalize
 from joblib import delayed
+from moleval.utils import read_smiles
 
 from .rnn_generator import SmilesRnnMoleculeGenerator
 from .rnn_utils import load_rnn_model
 
 
-class SmilesRnnDirectedGenerator(GoalDirectedGenerator):
+class SmilesRnnDirectedGenerator:
     def __init__(self, pretrained_model_path: str, n_epochs=4, mols_to_sample=1028, keep_top=512,
                  optimize_n_epochs=2, max_len=100, optimize_batch_size=64, number_final_samples=1028,
                  sample_final_model_only=False, random_start=False, smi_file=None, n_jobs=-1) -> None:
@@ -32,17 +31,18 @@ class SmilesRnnDirectedGenerator(GoalDirectedGenerator):
         self.pool = joblib.Parallel(n_jobs=n_jobs)
 
     def load_smiles_from_file(self, smi_file):
-        with open(smi_file) as f:
-            return self.pool(delayed(canonicalize)(s.strip()) for s in f)
+        smiles = read_smiles(smi_file) # MODIFIED to hand gz
+        return self.pool(delayed(canonicalize)(s.strip()) for s in smiles)
 
     def top_k(self, smiles, scoring_function, k):
-        joblist = (delayed(scoring_function.score)(s) for s in smiles)
-        scores = self.pool(joblist)
+        #joblist = (delayed(scoring_function.score)(s) for s in smiles)
+        #scores = self.pool(joblist)
+        scores = scoring_function.score(smiles, flt=True)
         scored_smiles = list(zip(scores, smiles))
         scored_smiles = sorted(scored_smiles, key=lambda x: x[0], reverse=True)
         return [smile for score, smile in scored_smiles][:k]
 
-    def generate_optimized_molecules(self, scoring_function: ScoringFunction, number_molecules: int,
+    def generate_optimized_molecules(self, scoring_function, number_molecules: int,
                                      starting_population: Optional[List[str]] = None) -> List[str]:
 
         # fetch initial population?
@@ -73,19 +73,20 @@ class SmilesRnnDirectedGenerator(GoalDirectedGenerator):
                                        optimize_n_epochs=self.optimize_n_epochs,
                                        pretrain_n_epochs=self.pretrain_n_epochs)
 
-        # take the molecules seen during the hill-climbing, and also sample from the final model
-        samples = [m.smiles for m in molecules]
-        if self.sample_final_model_only:
-            samples.clear()
-        samples += generator.sample(max(number_molecules, self.number_final_samples))
+        if False: # MODIFIED, only consider trajectory molecules
+            # take the molecules seen during the hill-climbing, and also sample from the final model
+            samples = [m.smiles for m in molecules]
+            if self.sample_final_model_only:
+                samples.clear()
+            samples += generator.sample(max(number_molecules, self.number_final_samples))
 
-        # calculate the scores and return the best ones
-        samples = canonicalize_list(samples)
-        scores = scoring_function.score_list(samples)
+            # calculate the scores and return the best ones
+            samples = canonicalize_list(samples)
+            scores = scoring_function.score_list(samples)
 
-        scored_molecules = zip(samples, scores)
-        sorted_scored_molecules = sorted(scored_molecules, key=lambda x: (x[1], hash(x[0])), reverse=True)
+            scored_molecules = zip(samples, scores)
+            sorted_scored_molecules = sorted(scored_molecules, key=lambda x: (x[1], hash(x[0])), reverse=True)
 
-        top_scored_molecules = sorted_scored_molecules[:number_molecules]
+            top_scored_molecules = sorted_scored_molecules[:number_molecules]
 
-        return [x[0] for x in top_scored_molecules]
+            return [x[0] for x in top_scored_molecules]

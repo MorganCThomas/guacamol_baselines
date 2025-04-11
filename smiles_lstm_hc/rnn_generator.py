@@ -7,7 +7,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from guacamol.scoring_function import ScoringFunction
 from guacamol.utils.chemistry import canonicalize_list
 
 from .rnn_model import SmilesRnn
@@ -59,7 +58,7 @@ class SmilesRnnMoleculeGenerator:
                                         optimizer=self.optimizer,
                                         device=self.device)
 
-    def optimise(self, objective: ScoringFunction, start_population, keep_top, n_epochs, mols_to_sample,
+    def optimise(self, objective, start_population, keep_top, n_epochs, mols_to_sample,
                  optimize_n_epochs, optimize_batch_size, pretrain_n_epochs) -> List[OptResult]:
         """
         Takes an objective and tries to optimise it
@@ -85,7 +84,9 @@ class SmilesRnnMoleculeGenerator:
                 results.append(k)
                 seen.add(k.smiles)
 
-        for epoch in range(1, 1 + n_epochs):
+        epoch = 1
+        while not objective.finished:
+        #for epoch in range(1, 1 + n_epochs):
 
             t0 = time.time()
             samples = self.sampler.sample(self.model, mols_to_sample, max_seq_len=self.max_len)
@@ -97,7 +98,7 @@ class SmilesRnnMoleculeGenerator:
 
             seen.update(canonicalized_samples)
 
-            scores = objective.score_list(payload)
+            scores = objective.score(payload, flt=True)
             int_results = [OptResult(smiles=smiles, score=score) for smiles, score in zip(payload, scores)]
 
             t2 = time.time()
@@ -137,6 +138,7 @@ class SmilesRnnMoleculeGenerator:
 
             top4 = '\n'.join(f'\t{result.score:.3f}: {result.smiles}' for result in results[:4])
             logger.info(f'Top 4:\n{top4}')
+            epoch += 1
 
         return sorted(results, reverse=True)
 
@@ -151,7 +153,7 @@ class SmilesRnnMoleculeGenerator:
                                    max_seq_len=self.max_len)
 
     # TODO refactor, still has lots of duplication
-    def pretrain_on_initial_population(self, scoring_function: ScoringFunction,
+    def pretrain_on_initial_population(self, scoring_function,
                                        start_population, pretrain_epochs) -> List[OptResult]:
         """
         Takes an objective and tries to optimise it
@@ -175,7 +177,7 @@ class SmilesRnnMoleculeGenerator:
 
         logger.info("finetuning with {} molecules for {} epochs".format(start_population_size, pretrain_epochs))
 
-        scores = scoring_function.score_list(training)
+        scores = scoring_function.score(training, flt=True)
         seed.extend(OptResult(smiles=smiles, score=score) for smiles, score in zip(training, scores))
 
         train_seqs, _ = load_smiles_from_list(training, max_len=self.max_len)

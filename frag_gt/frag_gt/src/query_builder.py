@@ -4,8 +4,8 @@ from typing import Optional, List, Tuple, Union
 import numpy as np
 from rdkit import Chem
 
-from frag_gt.src.frag_scorers import FragScorer
-from frag_gt.src.fragstore import FragStoreBase
+from .frag_scorers import FragScorer
+from .fragstore import FragStoreBase
 
 logger = logging.getLogger(__name__)
 

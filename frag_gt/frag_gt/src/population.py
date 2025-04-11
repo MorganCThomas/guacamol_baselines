@@ -6,11 +6,11 @@ import numpy as np
 from rdkit import Chem
 from rdkit.Chem.Descriptors import MolWt
 
-from frag_gt.src.fragmentors import fragmentor_factory
-from frag_gt.src.fragstore import fragstore_factory
-from frag_gt.src.operators import mc_operator_factory
-from frag_gt.src.query_builder import FragQueryBuilder
-from frag_gt.src.stereo import enumerate_unspecified_stereocenters
+from .fragmentors import fragmentor_factory
+from .fragstore import fragstore_factory
+from .operators import mc_operator_factory
+from .query_builder import FragQueryBuilder
+from .stereo import enumerate_unspecified_stereocenters
 
 logger = logging.getLogger(__name__)
 Molecule = namedtuple("Molecule", ["score", "mol"])

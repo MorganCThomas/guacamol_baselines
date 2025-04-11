@@ -6,7 +6,7 @@ from rdkit import Chem
 from rdkit.Chem.rdmolops import RDKFingerprint
 from rdkit.DataStructs.cDataStructs import ExplicitBitVect
 
-from frag_gt.src.gene_type_utils import get_attachment_type_idx_pairs
+from .gene_type_utils import get_attachment_type_idx_pairs
 
 DUMMY_ATOM = Chem.MolFromSmarts("[#0]")
 

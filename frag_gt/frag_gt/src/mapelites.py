@@ -3,9 +3,9 @@ from typing import List, Tuple, Union, Dict
 
 from rdkit.Chem import Descriptors
 
-from frag_gt.src.fragmentors import fragmentor_factory
-from frag_gt.src.gene_type_utils import get_species
-from frag_gt.src.population import Molecule
+from .fragmentors import fragmentor_factory
+from .gene_type_utils import get_species
+from .population import Molecule
 
 
 class MapElites(ABC):
