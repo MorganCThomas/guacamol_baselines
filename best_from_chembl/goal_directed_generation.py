@@ -33,10 +33,11 @@ if __name__ == '__main__':
         # Save configs
         save_config(vars(args), Path(task.save_dir) / "args.yaml")
         save_config(cfg, Path(task.save_dir) / "molscore_args.yaml")
-        with task as scoring_function:
+        with task as scorer:
             optimizer.generate_optimized_molecules(
-                scoring_function = scoring_function,
+                scoring_function = scorer,
                 number_molecules = cfg.total_smiles,
+                starting_population = read_smiles(scorer.starting_population) if scorer.starting_population else None
             )
     # Benchmark mode
     if cfg.molscore_mode == "benchmark":
@@ -53,10 +54,11 @@ if __name__ == '__main__':
         save_config(cfg, Path(MSB.output_dir) / "molscore_args.yaml")
         with MSB as benchmark:
             for task in benchmark:
-                with task as scoring_function:
+                with task as scorer:
                     optimizer.generate_optimized_molecules(
-                        scoring_function = scoring_function,
+                        scoring_function = scorer,
                         number_molecules = cfg.total_smiles,
+                        starting_population = read_smiles(scorer.starting_population) if scorer.starting_population else None
                     )
     # Curriculum mode
     if cfg.molscore_mode == "curriculum":
@@ -70,8 +72,9 @@ if __name__ == '__main__':
         # Save configs
         save_config(vars(args), Path(task.save_dir) / "args.yaml")
         save_config(cfg, Path(task.save_dir) / "molscore_args.yaml")
-        with task as scoring_function:
+        with task as scorer:
             optimizer.generate_optimized_molecules(
-                scoring_function = scoring_function,
+                scoring_function = scorer,
                 number_molecules = cfg.total_smiles,
+                starting_population = read_smiles(scorer.starting_population) if scorer.starting_population else None
             )

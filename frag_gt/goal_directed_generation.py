@@ -8,6 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
+from moleval.utils import read_smiles
 from molscore import MolScore, MolScoreBenchmark, MolScoreCurriculum
 
 from .frag_gt.frag_gt import FragGTGenerator
@@ -98,10 +99,11 @@ def main():
         # Save configs
         save_config(vars(args), Path(task.save_dir) / "args.yaml")
         save_config(cfg, Path(task.save_dir) / "molscore_args.yaml")
-        with task as scoring_function:
+        with task as scorer:
             optimizer.generate_optimized_molecules(
-                scoring_function = scoring_function,
+                scoring_function = scorer,
                 number_molecules = cfg.total_smiles,
+                starting_population = read_smiles(scorer.starting_population) if scorer.starting_population else None
             )
     # Benchmark mode
     if cfg.molscore_mode == "benchmark":
@@ -118,10 +120,11 @@ def main():
         save_config(cfg, Path(MSB.save_dir) / "molscore_args.yaml")
         with MSB as benchmark:
             for task in benchmark:
-                with task as scoring_function:
+                with task as scorer:
                     optimizer.generate_optimized_molecules(
-                        scoring_function = scoring_function,
+                        scoring_function = scorer,
                         number_molecules = cfg.total_smiles,
+                        starting_population = read_smiles(scorer.starting_population) if scorer.starting_population else None
                     )
     # Curriculum mode
     if cfg.molscore_mode == "curriculum":
@@ -135,10 +138,11 @@ def main():
         # Save configs
         save_config(vars(args), Path(task.save_dir) / "args.yaml")
         save_config(cfg, Path(task.save_dir) / "molscore_args.yaml")
-        with task as scoring_function:
+        with task as scorer:
             optimizer.generate_optimized_molecules(
-                scoring_function = scoring_function,
+                scoring_function = scorer,
                 number_molecules = cfg.total_smiles,
+                starting_population = read_smiles(scorer.starting_population) if scorer.starting_population else None
             )
 
 
