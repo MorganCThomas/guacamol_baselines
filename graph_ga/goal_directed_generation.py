@@ -110,7 +110,6 @@ class GB_GA_Generator:
         #    print(f'Benchmark requested more molecules than expected: new population is {number_molecules}')
 
         # fetch initial population?
-        import pdb; pdb.set_trace()
         if starting_population is None:
             print('selecting initial population...')
             if self.random_start:
