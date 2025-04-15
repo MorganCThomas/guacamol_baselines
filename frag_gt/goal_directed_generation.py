@@ -116,8 +116,8 @@ def main():
             **cfg.get("molscore_kwargs", {}),
         )
         # Save configs
-        save_config(vars(args), Path(MSB.save_dir) / "args.yaml")
-        save_config(cfg, Path(MSB.save_dir) / "molscore_args.yaml")
+        save_config(vars(args), Path(MSB.output_dir) / "args.yaml")
+        save_config(cfg, Path(MSB.output_dir) / "molscore_args.yaml")
         with MSB as benchmark:
             for task in benchmark:
                 with task as scorer:
