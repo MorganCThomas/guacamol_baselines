@@ -1,5 +1,7 @@
 import argparse
 import os
+import gzip
+from pathlib import Path
 
 from guacamol.utils.helpers import setup_default_logger
 
@@ -41,14 +43,22 @@ if __name__ == '__main__':
                                            lr=args.lr,
                                            valid_every=args.valid_every)
 
-    training_set_file = args.train_data
-    validation_set_file = args.valid_data
+    training_set_file = Path(args.train_data)
+    validation_set_file = Path(args.valid_data)
 
-    with open(training_set_file) as f:
-        train_list = f.readlines()
+    if '.gz' in training_set_file.suffix:
+        with gzip.open(training_set_file, 'rb') as f:
+            train_list = f.read().decode('utf-8').splitlines()
+    else:
+        with open(training_set_file) as f:
+            train_list = f.read().splitlines()
 
-    with open(validation_set_file) as f:
-        valid_list = f.readlines()
+    if '.gz' in validation_set_file.suffix:
+        with gzip.open(validation_set_file, 'rb') as f:
+            valid_list = f.read().decode('utf-8').splitlines()
+    else:
+        with open(validation_set_file) as f:
+            valid_list = f.read().splitlines()
 
     trainer.train(training_set=train_list, validation_set=valid_list)
 
