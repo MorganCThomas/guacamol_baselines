@@ -1,4 +1,4 @@
-name: molscore_guacamol
+name: msb_guacamol
 channels:
   - conda-forge
   - bioconda
