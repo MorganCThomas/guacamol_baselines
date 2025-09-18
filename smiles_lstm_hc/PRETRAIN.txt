@@ -1,0 +1,3 @@
+The script should be run with python -m from the parent directory, like the following
+
+python -m smiles_lstm_hc.train_smiles_lstm_model --train_data ~/MolScore_baselines/datasets/molexp/chembl34.smi.gz --valid_data ~/MolScore_baselines/datasets/molexp/chembl34.smi.gz --output_dir smiles_lstm_hc/pretrained_model/dir
